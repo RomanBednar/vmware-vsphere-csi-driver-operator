@@ -135,6 +135,8 @@ func (c *StorageClassController) syncStorageClass(ctx context.Context, policyNam
 	scString = policyReplacer.Replace(scString)
 
 	sc := resourceread.ReadStorageClassV1OrDie([]byte(scString))
+
 	_, _, err := resourceapply.ApplyStorageClass(ctx, c.kubeClient.StorageV1(), c.recorder, sc)
+
 	return err
 }
