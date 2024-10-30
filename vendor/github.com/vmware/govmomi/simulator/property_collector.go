@@ -1,11 +1,11 @@
 /*
-Copyright (c) 2017 VMware, Inc. All Rights Reserved.
+Copyright (c) 2017-2023 VMware, Inc. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -52,6 +52,7 @@ func NewPropertyCollector(ref types.ManagedObjectReference) object.Reference {
 
 var errMissingField = errors.New("missing field")
 var errEmptyField = errors.New("empty field")
+var errInvalidField = errors.New("invalid field")
 
 func getObject(ctx *Context, ref types.ManagedObjectReference) (reflect.Value, bool) {
 	var obj mo.Reference
@@ -180,6 +181,11 @@ func fieldValue(rval reflect.Value, p string) (interface{}, error) {
 			rval = rval.Elem()
 		}
 
+		if kind == reflect.Slice {
+			// field of array field cannot be specified
+			return nil, errInvalidField
+		}
+
 		x := ucFirst(name)
 		val := rval.FieldByName(x)
 		if !val.IsValid() {
@@ -234,11 +240,24 @@ func isFalse(v *bool) bool {
 	return v == nil || !*v
 }
 
+func toString(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
 func lcFirst(s string) string {
+	if len(s) < 1 {
+		return s
+	}
 	return strings.ToLower(s[:1]) + s[1:]
 }
 
 func ucFirst(s string) string {
+	if len(s) < 1 {
+		return s
+	}
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
@@ -310,6 +329,13 @@ func (rr *retrieveResult) collectFields(ctx *Context, rval reflect.Value, fields
 		case nil, errEmptyField:
 			rr.add(ctx, name, val, content)
 		case errMissingField:
+			content.MissingSet = append(content.MissingSet, types.MissingProperty{
+				Path: name,
+				Fault: types.LocalizedMethodFault{Fault: &types.InvalidProperty{
+					Name: name,
+				}},
+			})
+		case errInvalidField:
 			content.MissingSet = append(content.MissingSet, types.MissingProperty{
 				Path: name,
 				Fault: types.LocalizedMethodFault{Fault: &types.InvalidProperty{
@@ -829,9 +855,12 @@ func (pc *PropertyCollector) Fetch(ctx *Context, req *internal.Fetch) soap.HasFa
 
 	obj := res.(*methods.RetrievePropertiesExBody).Res.Returnval.Objects[0]
 	if len(obj.PropSet) == 0 {
-		fault := obj.MissingSet[0].Fault
-		body.Fault_ = Fault(fault.LocalizedMessage, fault.Fault)
-		return body
+		if len(obj.MissingSet) > 0 {
+			fault := obj.MissingSet[0].Fault
+			body.Fault_ = Fault(fault.LocalizedMessage, fault.Fault)
+			return body
+		}
+		return res
 	}
 
 	body.Res = &internal.FetchResponse{
