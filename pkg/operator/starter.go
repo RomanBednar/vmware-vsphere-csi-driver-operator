@@ -23,6 +23,7 @@ import (
 	"github.com/openshift/library-go/pkg/controller/controllercmd"
 	goc "github.com/openshift/library-go/pkg/operator/genericoperatorclient"
 	"github.com/openshift/library-go/pkg/operator/v1helpers"
+	"github.com/openshift/vmware-vsphere-csi-driver-operator/pkg/operator/cnsmigrationcontroller"
 
 	"github.com/openshift/vmware-vsphere-csi-driver-operator/assets"
 )
@@ -125,6 +126,17 @@ func RunOperator(ctx context.Context, controllerConfig *controllercmd.Controller
 		controllerConfig.EventRecorder,
 	)
 
+	cnsMigrationController := cnsmigrationcontroller.NewCNSMigrationController(
+		"CNSMigrationController",
+		utils.DefaultNamespace,
+		commonAPIClient,
+		operatorClient,
+		kubeClient,
+		kubeInformersForNamespaces,
+		configClient,
+		controllerConfig.EventRecorder,
+	)
+
 	klog.Info("Starting the informers")
 	go kubeInformersForNamespaces.Start(ctx.Done())
 	go dynamicInformers.Start(ctx.Done())
@@ -136,6 +148,9 @@ func RunOperator(ctx context.Context, controllerConfig *controllercmd.Controller
 
 	klog.Info("Starting environment check controller")
 	go vSphereController.Run(ctx, 1)
+
+	klog.Info("Starting CNS migration controller")
+	go cnsMigrationController.Run(ctx, 1)
 
 	<-ctx.Done()
 
