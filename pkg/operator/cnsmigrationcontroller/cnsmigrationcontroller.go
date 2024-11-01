@@ -71,6 +71,7 @@ type CNSMigrationController struct {
 func NewCNSMigrationController(
 	name, namespace string,
 	apiClients utils.APIClient,
+	k8sClient client.Client,
 	kubeInformers v1helpers.KubeInformersForNamespaces,
 	openshiftConfigClientSet configclient.Interface,
 	eventRecorder events.Recorder) factory.Controller {
@@ -81,6 +82,7 @@ func NewCNSMigrationController(
 		operatorClient:           apiClients.OperatorClient,
 		dynamicClient:            apiClients.DynamicClient,
 		kubeClient:               apiClients.KubeClient,
+		k8sClient:                k8sClient,
 		ApiExtClient:             apiClients.ApiExtClient,
 		pvLister:                 kubeInformers.InformersFor("").Core().V1().PersistentVolumes().Lister(),
 		configMapLister:          kubeInformers.InformersFor(utils.CloudConfigNamespace).Core().V1().ConfigMaps().Lister(),
@@ -101,7 +103,16 @@ func (c *CNSMigrationController) sync(ctx context.Context, syncCtx factory.SyncC
 	klog.V(4).Infof("CNSMigrationController sync started")
 	defer klog.V(4).Infof("CNSMigrationController sync completed")
 
-	failedVolumes, err := c.RegisterCNSDisks(ctx)
+	// This controller depends on CNS migration CRD which is created by the driver - we need to wait until it's present.
+	_, err := c.ApiExtClient.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, "cnsvspherevolumemigrations.cns.vmware.com", metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("CNS migration CRD not found: %v", err)
+		}
+		return fmt.Errorf("failed to check CNS migration CRD: %v", err)
+	}
+
+	failedVolumes, err := c.registerCNSDisks(ctx)
 	if err != nil {
 		if len(failedVolumes) > 0 {
 			// We know that CNS registration failed for some volumes - surface it to users.
@@ -238,6 +249,19 @@ func (c *CNSMigrationController) registerCNSDisks(ctx context.Context) (map[stri
 				failedVolumes[pv.Name] = err
 				continue
 			} else {
+				cnsvSphereVolumeMigration := migrationv1alpha1.CnsVSphereVolumeMigration{
+					ObjectMeta: metav1.ObjectMeta{Name: volumeInfo.VolumeID.Id},
+					Spec: migrationv1alpha1.CnsVSphereVolumeMigrationSpec{
+						VolumePath: volumePath,
+						VolumeID:   volumeInfo.VolumeID.Id,
+					},
+				}
+				err = c.saveVolumeInfo(ctx, &cnsvSphereVolumeMigration)
+				if err != nil {
+					err = fmt.Errorf("failed to save volume info: %v", err)
+					klog.Error(err)
+					break
+				}
 				klog.V(4).Infof("Successfully registered volume %q as container volume with ID: %q", volumePath, volumeInfo.VolumeID.Id)
 				break
 			}
@@ -314,6 +338,24 @@ func (c *CNSMigrationController) registerDisk(ctx context.Context, path string, 
 	}
 	return vStorageObject.Config.Id.Id, nil
 }
+
+// TODO: refactor? syncer uses kind: List
+func (c *CNSMigrationController) saveVolumeInfo(ctx context.Context,
+	cnsVSphereVolumeMigration *migrationv1alpha1.CnsVSphereVolumeMigration) error {
+	klog.V(4).Infof("creating CR for cnsVSphereVolumeMigration: %+v", cnsVSphereVolumeMigration)
+	err := c.k8sClient.Create(ctx, cnsVSphereVolumeMigration)
+	if err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			klog.Errorf("failed to create CR for cnsVSphereVolumeMigration. Error: %v", err)
+			return err
+		}
+		klog.V(4).Infof("CR already exists: %v", cnsVSphereVolumeMigration)
+		return nil
+	}
+	klog.V(4).Infof("Successfully created CR for cnsVSphereVolumeMigration: %+v", cnsVSphereVolumeMigration)
+	return nil
+}
+
 func (c *CNSMigrationController) addAdminAck(ctx context.Context) error {
 	adminGate, err := c.managedConfigMapLister.ConfigMaps(utils.ManagedConfigNamespace).Get(utils.AdminGateConfigMap)
 	if err != nil {

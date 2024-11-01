@@ -3,6 +3,9 @@ package operator
 import (
 	"context"
 	"fmt"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	migrationv1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/migration/v1alpha1"
 	"time"
 
 	"github.com/openshift/vmware-vsphere-csi-driver-operator/pkg/operator/utils"
@@ -76,6 +79,16 @@ func RunOperator(ctx context.Context, controllerConfig *controllercmd.Controller
 		return err
 	}
 
+	scheme := runtime.NewScheme()
+	err = migrationv1alpha1.AddToScheme(scheme)
+	if err != nil {
+		return err
+	}
+	k8sClient, err := client.New(controllerConfig.KubeConfig, client.Options{Scheme: scheme})
+	if err != nil {
+		return err
+	}
+
 	commonAPIClient := utils.APIClient{
 		OperatorClient:           operatorClient,
 		KubeClient:               kubeClient,
@@ -130,8 +143,7 @@ func RunOperator(ctx context.Context, controllerConfig *controllercmd.Controller
 		"CNSMigrationController",
 		utils.DefaultNamespace,
 		commonAPIClient,
-		operatorClient,
-		kubeClient,
+		k8sClient,
 		kubeInformersForNamespaces,
 		configClient,
 		controllerConfig.EventRecorder,
